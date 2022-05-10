@@ -1854,6 +1854,31 @@ def test_getattr_warning(case_setup):
         writer.finished_ok = True
 
 
+def test_warning_on_repl(case_setup):
+
+    def additional_output_checks(writer, stdout, stderr):
+        assert "WarningCalledOnRepl" in stderr
+
+    with case_setup.test_file(
+        '_debugger_case_evaluate.py',
+        additional_output_checks=additional_output_checks
+        ) as writer:
+        json_facade = JsonFacade(writer)
+
+        json_facade.write_set_breakpoints(writer.get_line_index_with_content('Break here'))
+        json_facade.write_make_initial_run()
+
+        json_hit = json_facade.wait_for_thread_stopped()
+
+        # We want warnings from the in evaluate in the repl (but not hover/watch).
+        json_facade.evaluate(
+            'import warnings; warnings.warn("WarningCalledOnRepl")', json_hit.frame_id, context='repl')
+
+        json_facade.write_continue()
+
+        writer.finished_ok = True
+
+
 def test_evaluate_numpy(case_setup, pyfile):
     try:
         import numpy
@@ -6060,6 +6085,43 @@ def test_replace_process(case_setup_multiprocessing):
             raise AssertionError('The SecondaryProcessThreadCommunication did not finish')
 
         assert secondary_finished_ok[0]
+        writer.finished_ok = True
+
+
+@pytest.mark.parametrize('resolve_symlinks', [True, False])
+def test_use_real_path_and_not_links(case_setup, tmpdir, resolve_symlinks):
+    dira = tmpdir.join('dira')
+    dira.mkdir()
+
+    dirb = tmpdir.join('dirb')
+    dirb.mkdir()
+
+    original_file = dira.join('test.py')
+    original_file.write('''
+print('p1')  # Break here
+print('p2')
+print('TEST SUCEEDED')
+''')
+
+    symlinked_file = dirb.join('testit.py')
+    os.symlink(str(original_file), str(symlinked_file))
+
+    # I.e.: we're launching the symlinked file but we're actually
+    # working with the original file afterwards.
+    with case_setup.test_file(str(symlinked_file)) as writer:
+        json_facade = JsonFacade(writer)
+
+        writer.write_add_breakpoint(writer.get_line_index_with_content('Break here'), filename=str(original_file))
+        json_facade.write_launch(justMyCode=False, resolveSymlinks=resolve_symlinks)
+        json_facade.write_make_initial_run()
+
+        json_hit = json_facade.wait_for_thread_stopped()
+        filename = json_hit.stack_trace_response.body.stackFrames[0]['source']['path']
+        if resolve_symlinks:
+            assert filename == str(original_file)
+        else:
+            assert filename == str(symlinked_file)
+        json_facade.write_continue()
         writer.finished_ok = True
 
 
